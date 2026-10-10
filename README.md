@@ -30,7 +30,7 @@ CRS handling is central to measurement: longitude and latitude in EPSG:4326 are 
 ## Architecture
 
 ```mermaid
-flowchart TD
+flowchart LR
     User --> Browser
     Browser[Browser UI<br/>HTML, CSS, JavaScript] -->|GET /| App[FastAPI application]
     Browser -->|POST multipart upload| Routes[File API routes]

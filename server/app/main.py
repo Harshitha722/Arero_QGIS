@@ -13,6 +13,9 @@ app = FastAPI(
     title="Geospatial File Measurement API",
     description="Upload KML or zipped Shapefiles to calculate per-feature measurements.",
     version="1.0.0",
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
 )
 app.include_router(files_router)
 

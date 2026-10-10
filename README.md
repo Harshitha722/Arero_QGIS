@@ -31,28 +31,31 @@ CRS handling is central to measurement: longitude and latitude in EPSG:4326 are 
 
 ```mermaid
 flowchart TD
-    U[User] --> UI[Browser UI: static HTML, CSS, JavaScript]
-    UI -->|multipart upload / JSON requests| API[FastAPI routes]
-    API --> FS[File validation and parsing]
-    FS --> MS[Geometry and CRS processing]
-    MS -->|processed metadata and features| DB[(MySQL-compatible database)]
-    API -->|JSON response| UI
-    UI --> MAP[Leaflet map]
-    UI --> TABLE[Feature table and detail disclosure]
+    User --> Browser
+    Browser[Browser UI<br/>HTML, CSS, JavaScript] -->|GET /| App[FastAPI application]
+    Browser -->|POST multipart upload| Routes[File API routes]
+    Routes --> Validate[Validate and parse upload]
+    Validate --> Measure[Transform geometries and calculate measurements]
+    Measure --> Store[Storage service]
+    Store <--> DB[(MySQL-compatible database)]
+    Routes -->|JSON results| Browser
+    App -->|Serves| Browser
+    Browser --> Map[Leaflet map and feature table]
+    App -->|GET /api/health| DB
 ```
 
-- **Browser UI:** `server/app/static/index.html` provides the upload form, status messages, results summary, Leaflet map, feature table, and feature detail disclosure. It calls the API with browser `fetch` and is served at `/` by FastAPI.
-- **API:** `server/app/main.py` creates the FastAPI app, serves the UI, and exposes the database health endpoint. `server/app/routes/files.py` implements file upload and retrieval endpoints.
-- **Processing:** `server/app/services/file_service.py` validates uploads, safely extracts Shapefile archives, and parses KML or Shapefile content. `server/app/services/measurement_service.py` converts geometry for display and calculates measurements.
-- **Persistence:** `server/app/services/storage_service.py` writes and reads processed records. `server/app/utils/database.py` configures the PyMySQL connection and creates the `files` and `features` tables when a database operation initializes storage.
-- **Schemas:** `server/app/schemas/file.py` defines the response models used for API validation and serialization.
+- **Browser UI:** `server/app/static/index.html` provides the upload form, status messages, dataset profile, Leaflet map, and feature table. It uploads files with browser `fetch` and renders the returned JSON.
+- **Application and routes:** `server/app/main.py` serves the UI and health endpoint. `server/app/routes/files.py` handles upload and retrieval requests.
+- **File processing:** `server/app/services/file_service.py` validates uploads, safely extracts Shapefile archives, and parses KML or Shapefile content. `server/app/services/measurement_service.py` transforms geometries for display and calculates measurements.
+- **Persistence:** `server/app/services/storage_service.py` writes and reads processed records. `server/app/utils/database.py` configures PyMySQL and initializes the `files` and `features` tables.
+- **Response schemas:** `server/app/schemas/file.py` defines API response models. Generated OpenAPI, Swagger UI, and ReDoc endpoints are disabled.
 
 ## Technology stack
 
 | Technology | Role |
 |---|---|
 | Python 3.10 or later | Backend language; the source uses modern union type syntax. |
-| FastAPI, Uvicorn | HTTP API, request validation, API docs, and local ASGI server. |
+| FastAPI, Uvicorn | HTTP API, request validation, and local ASGI server. |
 | Shapely | Geometry construction, transformations, validity checks, and planar area/length operations. |
 | pyproj | CRS parsing, coordinate transformations, and UTM CRS selection. |
 | pyshp | Shapefile and attribute-record reading. |
@@ -148,8 +151,6 @@ python -m uvicorn app.main:app --reload
 Open:
 
 - Web interface: <http://127.0.0.1:8000/>
-- Interactive API documentation: <http://127.0.0.1:8000/docs>
-- OpenAPI schema: <http://127.0.0.1:8000/openapi.json>
 
 ### Linux and macOS
 
@@ -292,7 +293,7 @@ This strategy assumes a feature is reasonably represented by one local UTM zone.
 
 ## Design decisions and trade-offs
 
-- **FastAPI:** provides typed request handling, response models, and generated OpenAPI documentation with a small route layer.
+- **FastAPI:** provides typed request handling and response validation through a small route layer.
 - **Shapely and pyproj:** separate geometry operations from CRS transformation and measurement, while allowing each feature's errors to be recorded alongside results.
 - **KML and zipped Shapefile:** cover two common exchange formats. ZIP extraction uses a temporary directory and explicit safety limits; uploads are not retained as source files.
 - **Per-feature UTM:** gives local planar meter units for common regional data and avoids applying planar measurement directly to angular longitude/latitude coordinates. It is not a universal projection strategy.

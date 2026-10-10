@@ -70,6 +70,8 @@ def process_geodataframe(
             "index": feature_index,
             "geometry_type": geometry_type,
             "geometry": _json_value(mapping(geometry)) if geometry is not None else None,
+            "map_geometry": None,
+            "map_error": None,
             "properties": properties,
             "source_crs": crs_text,
             "projected_crs": None,
@@ -77,6 +79,24 @@ def process_geodataframe(
             "unit": None,
             "processing_error": None,
         }
+
+        if geometry is not None and not geometry.is_empty and resolved_crs is not None:
+            try:
+                to_geographic = Transformer.from_crs(
+                    resolved_crs, CRS.from_epsg(4326), always_xy=True
+                )
+                geographic_geometry = transform_geometry(
+                    geometry, to_geographic.transform, interleaved=False
+                )
+                item["map_geometry"] = _json_value(mapping(geographic_geometry))
+            except (
+                ValueError,
+                TypeError,
+                ArithmeticError,
+                ProjError,
+                GEOSException,
+            ) as error:
+                item["map_error"] = str(error)
 
         if geometry is None:
             item["processing_error"] = "Feature has null geometry"

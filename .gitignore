@@ -4,7 +4,6 @@ __pycache__/
 .venv/
 venv/
 .pytest_cache/
-server/data/
 *.sqlite3
 *.db
 

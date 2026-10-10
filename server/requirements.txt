@@ -7,3 +7,6 @@ pyproj
 fiona
 httpx
 pytest
+python-dotenv
+PyMySQL
+certifi

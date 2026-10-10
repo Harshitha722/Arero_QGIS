@@ -1,10 +1,9 @@
 fastapi
 uvicorn[standard]
 python-multipart
-geopandas
 shapely
 pyproj
-fiona
+pyshp
 httpx
 pytest
 python-dotenv

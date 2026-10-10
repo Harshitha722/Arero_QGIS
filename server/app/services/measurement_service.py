@@ -1,7 +1,6 @@
 import math
 from typing import Any
 
-import geopandas as gpd
 from pyproj import CRS, Transformer
 from pyproj.exceptions import ProjError
 from shapely import transform as transform_geometry
@@ -48,24 +47,18 @@ def _json_value(value: Any) -> Any:
     return str(value)
 
 
-def process_geodataframe(
-    dataframe: gpd.GeoDataFrame,
+def process_features(
+    source_features: list[tuple[Any, dict[str, Any]]],
     *,
     source_crs: CRS | None = None,
 ) -> tuple[str | None, list[dict[str, Any]]]:
-    resolved_crs = CRS.from_user_input(source_crs or dataframe.crs) if (
-        source_crs or dataframe.crs
-    ) else None
+    resolved_crs = CRS.from_user_input(source_crs) if source_crs else None
     crs_text = resolved_crs.to_string() if resolved_crs else None
     processed: list[dict[str, Any]] = []
 
-    for feature_index, (_, row) in enumerate(dataframe.iterrows()):
-        geometry = row.geometry
+    for feature_index, (geometry, raw_properties) in enumerate(source_features):
         geometry_type = geometry.geom_type if geometry is not None else None
-        properties = {
-            str(key): _json_value(value)
-            for key, value in row.drop(labels=[dataframe.geometry.name]).to_dict().items()
-        }
+        properties = {str(key): _json_value(value) for key, value in raw_properties.items()}
         item: dict[str, Any] = {
             "index": feature_index,
             "geometry_type": geometry_type,
@@ -112,9 +105,12 @@ def process_geodataframe(
             else:
                 try:
                     projected_crs = _utm_crs_for_geometry(geometry, resolved_crs)
-                    projected = gpd.GeoSeries([geometry], crs=resolved_crs).to_crs(
-                        projected_crs
-                    ).iloc[0]
+                    to_projected = Transformer.from_crs(
+                        resolved_crs, projected_crs, always_xy=True
+                    )
+                    projected = transform_geometry(
+                        geometry, to_projected.transform, interleaved=False
+                    )
                     item["projected_crs"] = projected_crs.to_string()
                     if geometry_type in AREA_TYPES:
                         item["measurement"] = float(projected.area)

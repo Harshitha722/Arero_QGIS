@@ -20,7 +20,7 @@ Database settings are loaded from `server/.env` locally. Add the TiDB password t
 
 ## Deploy on Vercel
 
-Create a Vercel project with `server` as its Root Directory. The Python function serves both the UI and API. The standalone page is `server/app/static/index.html`.
+Create a Vercel project with `server` as its Root Directory. Vercel detects the FastAPI application in `app/main.py`; the function configuration includes the standalone UI at `app/static/index.html`.
 
 ## API
 

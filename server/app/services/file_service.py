@@ -1,4 +1,3 @@
-import copy
 import stat
 import tempfile
 import zipfile
@@ -6,11 +5,21 @@ import xml.etree.ElementTree as ET
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
-import geopandas as gpd
-from fiona.errors import FionaError
 from pyproj import CRS
+from pyproj.exceptions import CRSError
+from shapefile import Reader, ShapefileException
+from shapely.geometry import (
+    GeometryCollection,
+    LineString,
+    MultiLineString,
+    MultiPoint,
+    MultiPolygon,
+    Point,
+    Polygon,
+    shape as shapely_shape,
+)
 
-from app.services.measurement_service import process_geodataframe
+from app.services.measurement_service import process_features
 
 
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024
@@ -113,98 +122,154 @@ def _safe_extract_shapefile(archive_path: Path, destination: Path) -> Path:
     return shapefile
 
 
-def _flatten_kml_placemarks(source_path: Path, destination_path: Path) -> None:
+def _element_name(element: ET.Element) -> str:
+    return element.tag.rpartition("}")[2]
+
+
+def _element_text(element: ET.Element, name: str) -> str | None:
+    for child in element:
+        if _element_name(child) == name:
+            return child.text
+    return None
+
+
+def _kml_coordinates(element: ET.Element) -> list[tuple[float, ...]]:
+    text = _element_text(element, "coordinates")
+    if not text:
+        return []
+    coordinates = []
+    for coordinate in text.split():
+        values = tuple(float(value) for value in coordinate.split(","))
+        if len(values) < 2:
+            raise ValueError("KML coordinates must contain longitude and latitude")
+        coordinates.append(values)
+    return coordinates
+
+
+def _kml_geometry(element: ET.Element) -> Any:
+    kind = _element_name(element)
+    if kind == "Point":
+        coordinates = _kml_coordinates(element)
+        return Point(coordinates[0]) if coordinates else None
+    if kind == "LineString":
+        coordinates = _kml_coordinates(element)
+        return LineString(coordinates) if len(coordinates) >= 2 else None
+    if kind == "Polygon":
+        shell = None
+        holes = []
+        for boundary in element:
+            boundary_name = _element_name(boundary)
+            if boundary_name not in {"outerBoundaryIs", "innerBoundaryIs"}:
+                continue
+            ring = next(
+                (child for child in boundary if _element_name(child) == "LinearRing"),
+                None,
+            )
+            if ring is None:
+                continue
+            coordinates = _kml_coordinates(ring)
+            if len(coordinates) < 4:
+                continue
+            if boundary_name == "outerBoundaryIs":
+                shell = coordinates
+            else:
+                holes.append(coordinates)
+        return Polygon(shell, holes) if shell else None
+    if kind == "MultiGeometry":
+        geometries = [
+            geometry
+            for child in element
+            if (geometry := _kml_geometry(child)) is not None
+        ]
+        if not geometries:
+            return None
+        types = {geometry.geom_type for geometry in geometries}
+        if len(types) > 1:
+            return GeometryCollection(geometries)
+        geometry_type = geometries[0].geom_type
+        if geometry_type == "Point":
+            return MultiPoint(geometries)
+        if geometry_type == "LineString":
+            return MultiLineString(geometries)
+        if geometry_type == "Polygon":
+            return MultiPolygon(geometries)
+        return geometries[0]
+    return None
+
+
+def _kml_properties(placemark: ET.Element) -> dict[str, Any]:
+    properties: dict[str, Any] = {}
+    for child in placemark:
+        name = _element_name(child)
+        if name in {"name", "description"}:
+            properties[name.title() if name == "name" else name] = child.text
+        elif name == "ExtendedData":
+            for data in child.iter():
+                data_name = _element_name(data)
+                key = data.attrib.get("name") if data_name in {"Data", "SimpleData"} else None
+                if key:
+                    value = _element_text(data, "value")
+                    properties[key] = value if value is not None else data.text
+    return properties
+
+
+def _read_kml(path: Path) -> list[tuple[Any, dict[str, Any]]]:
     try:
-        root = ET.parse(source_path).getroot()
+        root = ET.parse(path).getroot()
     except (ET.ParseError, OSError) as error:
         raise FileProcessingError(f"Could not parse KML XML: {error}") from error
-
-    if not isinstance(root.tag, str):
+    if _element_name(root) != "kml":
         raise FileProcessingError("KML document has an invalid root element")
-    namespace = root.tag.partition("}")[0][1:] if root.tag.startswith("{") else ""
 
-    def local_name(element: ET.Element) -> str:
-        return element.tag.rpartition("}")[2]
+    features: list[tuple[Any, dict[str, Any]]] = []
+    for placemark in root.iter():
+        if _element_name(placemark) != "Placemark":
+            continue
+        for child in placemark:
+            if _element_name(child) in KML_GEOMETRY_ELEMENTS | {"MultiGeometry"}:
+                try:
+                    geometry = _kml_geometry(child)
+                except (ValueError, TypeError) as error:
+                    raise FileProcessingError(
+                        f"Could not parse KML geometry: {error}"
+                    ) from error
+                if geometry is not None:
+                    features.append((geometry, _kml_properties(placemark)))
+    return features
 
-    def is_kml_element(element: ET.Element, name: str) -> bool:
-        if not isinstance(element.tag, str):
-            return False
-        element_namespace = (
-            element.tag.partition("}")[0][1:]
-            if element.tag.startswith("{")
-            else ""
-        )
-        return element_namespace == namespace and local_name(element) == name
 
-    placemarks = [
-        element for element in root.iter()
-        if is_kml_element(element, "Placemark")
-    ]
-    supported_placemarks: list[ET.Element] = []
-    for placemark in placemarks:
-        elements = [placemark]
-        elements.extend(
-            element
-            for element in placemark.iter()
-            if element is not placemark
-            and not is_kml_element(element, "Placemark")
-        )
-        if any(
-            is_kml_element(element, geometry_name)
-            for element in elements
-            for geometry_name in KML_GEOMETRY_ELEMENTS
-        ):
-            supported_placemarks.append(placemark)
-
-    kml_tag = f"{{{namespace}}}kml" if namespace else "kml"
-    document_tag = f"{{{namespace}}}Document" if namespace else "Document"
-    flattened_root = ET.Element(kml_tag)
-    document = ET.SubElement(flattened_root, document_tag)
-    for schema in root.iter():
-        if is_kml_element(schema, "Schema"):
-            document.append(copy.deepcopy(schema))
-    for placemark in supported_placemarks:
-        document.append(copy.deepcopy(placemark))
-
+def _read_shapefile(path: Path) -> tuple[list[tuple[Any, dict[str, Any]]], CRS | None]:
     try:
-        if namespace:
-            ET.register_namespace("", namespace)
-        ET.ElementTree(flattened_root).write(
-            destination_path,
-            encoding="utf-8",
-            xml_declaration=True,
-        )
-    except OSError as error:
-        raise FileProcessingError(f"Could not prepare KML features: {error}") from error
+        reader = Reader(str(path))
+        features = [
+            (
+                shapely_shape(shape_record.shape.__geo_interface__)
+                if shape_record.shape.shapeType != 0
+                else None,
+                shape_record.record.as_dict(),
+            )
+            for shape_record in reader.iterShapeRecords()
+        ]
+        reader.close()
+    except (ShapefileException, OSError, UnicodeError, ValueError) as error:
+        raise FileProcessingError(f"Could not read Shapefile data: {error}") from error
 
-
-def _read_geodataframe(path: Path, file_extension: str) -> tuple[gpd.GeoDataFrame, CRS | None]:
-    try:
-        if file_extension == ".kml":
-            with tempfile.TemporaryDirectory(prefix="geospatial-kml-") as directory:
-                flattened_path = Path(directory) / "flattened.kml"
-                _flatten_kml_placemarks(path, flattened_path)
-                dataframe = gpd.read_file(
-                    flattened_path,
-                    driver="KML",
-                    engine="fiona",
-                    enabled_drivers=["KML"],
-                    allow_unsupported_drivers=True,
-                )
-        else:
-            dataframe = gpd.read_file(path)
-    except (FionaError, OSError, ValueError) as error:
-        raise FileProcessingError(
-            f"Could not read {file_extension[1:].upper()} data: {error}"
-        ) from error
-
-    if dataframe.empty:
-        raise FileProcessingError("Uploaded geospatial file contains no features")
-
-    if file_extension == ".kml" and dataframe.crs is None:
-        dataframe = dataframe.set_crs(CRS.from_epsg(4326))
-    source_crs = CRS.from_user_input(dataframe.crs) if dataframe.crs else None
-    return dataframe, source_crs
+    projection_path = next(
+        (
+            candidate
+            for candidate in path.parent.iterdir()
+            if candidate.stem.casefold() == path.stem.casefold()
+            and candidate.suffix.casefold() == ".prj"
+        ),
+        None,
+    )
+    source_crs = None
+    if projection_path is not None:
+        try:
+            source_crs = CRS.from_wkt(projection_path.read_text(encoding="utf-8"))
+        except (CRSError, OSError, UnicodeError) as error:
+            raise FileProcessingError(f"Could not read Shapefile CRS: {error}") from error
+    return features, source_crs
 
 
 def process_uploaded_file(filename: str, content: bytes) -> dict[str, Any]:
@@ -226,6 +291,12 @@ def process_uploaded_file(filename: str, content: bytes) -> dict[str, Any]:
             archive_path.write_bytes(content)
             source_path = _safe_extract_shapefile(archive_path, work_directory / "extracted")
 
-        dataframe, source_crs = _read_geodataframe(source_path, extension)
-        crs, features = process_geodataframe(dataframe, source_crs=source_crs)
+        if extension == ".kml":
+            source_features = _read_kml(source_path)
+            source_crs = CRS.from_epsg(4326)
+        else:
+            source_features, source_crs = _read_shapefile(source_path)
+        if not source_features:
+            raise FileProcessingError("Uploaded geospatial file contains no features")
+        crs, features = process_features(source_features, source_crs=source_crs)
         return {"crs": crs, "features": features}

@@ -19,7 +19,10 @@ app.include_router(files_router)
 
 @app.get("/", include_in_schema=False)
 def index() -> FileResponse:
-    return FileResponse(Path(__file__).parent / "static" / "index.html")
+    return FileResponse(
+        Path(__file__).parent / "static" / "index.html",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @app.get("/api/health", response_model=HealthResponse, tags=["health"])

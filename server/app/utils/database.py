@@ -64,9 +64,9 @@ def initialize_database(connection: Connection) -> None:
             """
             CREATE TABLE IF NOT EXISTS files (
                 id CHAR(36) PRIMARY KEY,
-                filename VARCHAR(255) NOT NULL,
+                filename VARCHAR(512) NOT NULL,
                 feature_count INT NOT NULL,
-                crs VARCHAR(128) NULL,
+                crs VARCHAR(2048) NULL,
                 status VARCHAR(32) NOT NULL,
                 created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
             ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
@@ -82,8 +82,8 @@ def initialize_database(connection: Connection) -> None:
                 map_geometry JSON NULL,
                 map_error TEXT NULL,
                 properties JSON NOT NULL,
-                source_crs VARCHAR(128) NULL,
-                projected_crs VARCHAR(128) NULL,
+                source_crs VARCHAR(2048) NULL,
+                projected_crs VARCHAR(2048) NULL,
                 measurement DOUBLE NULL,
                 unit VARCHAR(16) NULL,
                 processing_error TEXT NULL,
@@ -94,6 +94,36 @@ def initialize_database(connection: Connection) -> None:
             ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
             """
         )
+
+        # CREATE TABLE IF NOT EXISTS does not update columns on existing databases.
+        # Widen these metadata fields to support long upload names and custom CRS text.
+        cursor.execute(
+            """
+            SELECT TABLE_NAME, COLUMN_NAME, DATA_TYPE, CHARACTER_MAXIMUM_LENGTH
+            FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND ((TABLE_NAME = 'files' AND COLUMN_NAME IN ('filename', 'crs'))
+                OR (TABLE_NAME = 'features' AND COLUMN_NAME IN ('source_crs', 'projected_crs')))
+            """
+        )
+        column_lengths = {
+            (row["TABLE_NAME"], row["COLUMN_NAME"]): (
+                row["DATA_TYPE"].lower(), row["CHARACTER_MAXIMUM_LENGTH"]
+            )
+            for row in cursor.fetchall()
+        }
+        widened_columns = {
+            ("files", "filename"): (512, "NOT NULL"),
+            ("files", "crs"): (2048, "NULL"),
+            ("features", "source_crs"): (2048, "NULL"),
+            ("features", "projected_crs"): (2048, "NULL"),
+        }
+        for (table_name, column_name), (length, nullability) in widened_columns.items():
+            data_type, current_length = column_lengths.get((table_name, column_name), ("", 0))
+            if data_type != "varchar" or current_length is None or current_length < length:
+                cursor.execute(
+                    f"ALTER TABLE `{table_name}` MODIFY COLUMN `{column_name}` VARCHAR({length}) {nullability}"
+                )
 
 
 def decode_json_value(value: Any) -> Any:

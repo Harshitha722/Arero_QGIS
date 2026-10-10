@@ -1,3 +1,4 @@
+import logging
 import uuid
 from pathlib import PureWindowsPath
 
@@ -19,19 +20,29 @@ from app.services.storage_service import get_features, get_file, save_processed_
 
 
 router = APIRouter(prefix="/api/files", tags=["files"])
+logger = logging.getLogger(__name__)
 
 
 def _database_error_detail(error: MySQLError | RuntimeError, action: str) -> str:
-    if isinstance(error, MySQLError) and error.args and error.args[0] == 1049:
+    error_code = error.args[0] if isinstance(error, MySQLError) and error.args else None
+    if error_code == 1049:
         return (
             "The configured database does not exist. Create the application database "
             "in TiDB Cloud or set DB_DATABASE to an existing database."
         )
-    if isinstance(error, MySQLError) and error.args and error.args[0] == 1142:
+    if error_code == 1045:
+        return "The database rejected the configured credentials. Check DB_USERNAME and DB_PASSWORD."
+    if error_code == 1044:
+        return "The database user cannot access DB_DATABASE. Check the database name and user grants."
+    if error_code in {2002, 2003, 2006, 2013}:
+        return "The database server could not be reached or the connection was lost. Check DB_HOST, DB_PORT, TiDB availability, and network access."
+    if error_code == 1142:
         return (
             "The database user cannot create tables in this schema. "
             "Select an application database and grant it CREATE privileges."
         )
+    if error_code is not None:
+        return f"Could not {action} in the database (MySQL error {error_code}). Check the server log for details."
     return f"Could not {action} in the database. Check the database configuration and try again."
 
 
@@ -63,6 +74,8 @@ async def upload_file(file: UploadFile = File(...)) -> dict:
     try:
         save_processed_file(file_id, filename, result["crs"], [item.model_dump() for item in features])
     except (MySQLError, RuntimeError) as error:
+        error_code = error.args[0] if isinstance(error, MySQLError) and error.args else "configuration"
+        logger.error("Database save failed (%s)", error_code)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=_database_error_detail(error, "save the processed file"),

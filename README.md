@@ -13,10 +13,11 @@ The project addresses the effort and errors involved in manually measuring many 
 - Uses KML's EPSG:4326 coordinates or a Shapefile `.prj` file to determine the source coordinate reference system (CRS).
 - Returns original geometry, map-ready WGS 84 geometry, measurement and CRS metadata, and per-feature processing errors.
 - Shows uploaded geometries on a Leaflet map and synchronizes map and table selection.
+- Summarizes feature counts, mappable features, and geometry-type distribution.
 - Stores processed metadata and feature measurements in MySQL-compatible storage configured through environment variables.
 - Limits uploads to 50 MiB and applies ZIP member-count, expanded-size, and extraction-path checks.
 
-The current interface does not include charts, feature search, filtering, geometry repair, or data export.
+The current interface does not include feature search, filtering, geometry repair, or data export.
 
 ## Problem and objectives
 
@@ -68,6 +69,14 @@ Python dependencies are listed in `server/requirements.txt`. They are not versio
 GeoMeasure/
 |-- .gitignore
 |-- README.md
+|-- docs/
+|   `-- images/
+|       |-- upload-screen.png
+|       |-- kml-results.png
+|       `-- shapefile-results.png
+|-- sample_data/
+|   |-- sample-kml.kml
+|   `-- State_Capitals.zip
 `-- server/
     |-- requirements.txt
     |-- vercel.json
@@ -87,7 +96,27 @@ GeoMeasure/
             `-- database.py
 ```
 
-The repository has no separate frontend source/build directory or sample-data directory.
+The frontend is served directly from `server/app/static/index.html`; there is no separate frontend build directory.
+
+## Use case screenshots
+
+### 1. Start with a new upload
+
+The initial screen lets users choose a KML file or a zipped Shapefile before processing.
+
+![GeoMeasure ready screen with the dataset upload control](docs/images/upload-screen.png)
+
+### 2. Review polygon features from a KML dataset
+
+After processing the KML sample, users can inspect its polygon features in the map and feature table, along with measurements and a dataset profile.
+
+<img src="docs/images/kml-results.png" alt="Processed KML dataset with polygon features, measurements, map, and feature profile" width="100%">
+
+### 3. Explore point features from a zipped Shapefile
+
+The Shapefile sample demonstrates point features on the map and in the table. Point features are mappable, but do not receive area or length measurements.
+
+<img src="docs/images/shapefile-results.png" alt="Processed State Capitals Shapefile with point features shown on the map and in the table" width="100%">
 
 ## Requirements and setup
 
@@ -271,26 +300,6 @@ This strategy assumes a feature is reasonably represented by one local UTM zone.
 - **Synchronous processing:** parsing and measurement happen in the upload request. This keeps the implementation straightforward, but long or complex jobs occupy request processing time; there is no task queue or progress reporting.
 - **Static frontend:** avoids a separate build system, but Leaflet and map tiles depend on external services being available in the browser.
 
-## Errors and edge cases
-
-| Input or condition | Current behavior |
-|---|---|
-| Unsupported extension, empty file, or upload over 50 MiB | Upload endpoint returns `400` with a detail message. |
-| Malformed KML XML, invalid KML root, unreadable ZIP, invalid Shapefile, missing required Shapefile component, or no extracted features | Processing raises an error and upload returns `400`. |
-| ZIP has no `.shp`, more than one `.shp`, unsafe/duplicate paths, a symbolic link, over 2,000 members, or expands beyond 200 MiB | ZIP is rejected and upload returns `400`. |
-| Shapefile has no `.prj` | Features are returned with unknown source CRS. Map conversion is unavailable and measurable feature types receive a processing error for missing CRS. |
-| Null or empty geometry | Feature is preserved with a processing error and no measurement. A Shapefile with records but null shapes can still return feature results. |
-| Invalid geometry | Feature is preserved with an invalid-geometry error and no measurement. The service does not repair it. |
-| Unsupported geometry type | Feature is preserved with an unsupported-type error and no measurement. |
-| Feature outside the supported UTM latitude range or a transformation failure | Measurement error is stored on that feature; other features can still be processed. |
-| KML with no supported, parseable features | Upload returns `400` because the dataset has no features. |
-| KML with a supported Placemark geometry but malformed coordinates | Parsing fails for the upload; the whole request returns `400`. |
-| Missing file form field | FastAPI returns `422` validation error. |
-| Database unavailable or table/data operation fails | Database health and file endpoints return `503`; upload processing is not considered successful if results cannot be saved. |
-| Unknown file ID on either retrieval endpoint | Returns `404` with `{"detail":"File not found"}`. |
-
-KML parsing supports Point, LineString, Polygon, and MultiGeometry composed of one geometry type. A mixed MultiGeometry becomes a GeometryCollection and is not measurable by the current service. The parser traverses nested folders/documents by searching all descendants for placemarks, but does not cover all KML features such as NetworkLinks or every ExtendedData representation.
-
 ## Using the web interface
 
 1. Open <http://127.0.0.1:8000/> after configuring the database and starting FastAPI.
@@ -300,25 +309,16 @@ KML parsing supports Point, LineString, Polygon, and MultiGeometry composed of o
 5. Select a map feature or table row to highlight and zoom to that feature.
 6. Expand the selected feature's detail disclosure to inspect its properties, geometry, CRS, measurement, and processing information.
 
-The UI does not provide filtering, searching, charts, editing, or export. Upload and retrieval endpoints persist processed results through the configured database.
+The UI includes a geometry-type summary, but does not provide filtering, searching, editing, or export. Upload and retrieval endpoints persist processed results through the configured database.
 
 ## Sample data
 
-No sample geographic datasets are checked into this repository. Prepare a KML file or a ZIP containing the `.shp`, `.shx`, and `.dbf` files for one Shapefile; include a matching `.prj` when its source CRS is known. Do not use a dataset with sensitive location or attribute data in a public environment.
+Two ready-to-upload datasets are included in [`sample_data/`](sample_data/):
 
-## Limitations and possible improvements
+| File | Format and contents | Example use |
+|---|---|---|
+| [`sample-kml.kml`](sample_data/sample-kml.kml) | KML dataset with 368 polygon features in EPSG:4326. | Review mapped polygons, feature properties, and calculated areas. |
+| [`State_Capitals.zip`](sample_data/State_Capitals.zip) | ZIP archive containing one Shapefile with 34 point features and its projection file. | Explore state-capital locations on the map. Points have no area or length measurement. |
 
-- Pin and document dependency versions.
-- Improve projection selection for large, global, or cross-zone features; consider geodesic length and equal-area calculations where appropriate.
-- Add streaming uploads, background processing, request limits at deployment, and progress reporting for larger workloads.
-- Expand KML support for more complex and mixed geometry structures, and define whether geometry repair should be supported.
-- Add optional result export and table filtering when those workflows are needed.
-- Correct the area-unit string's source encoding so the API emits `m^2` consistently. The measurement itself is stored as a numeric area in square meters.
+To try either dataset, start the application, open <http://127.0.0.1:8000/>, select the file from `sample_data/`, and choose **Process file**. The Shapefile must remain zipped for upload.
 
-## Learning outcomes
-
-The code demonstrates REST API design, multipart upload handling, geospatial format parsing, CRS transformation, geometry measurement, relational persistence, frontend/backend integration, and per-feature error reporting.
-
-## Author and license
-
-No author information or license file is present in the repository. No license has been specified.

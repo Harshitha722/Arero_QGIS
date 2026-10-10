@@ -11,11 +11,12 @@ from app.utils.database import get_connection, initialize_database
 
 app = FastAPI(
     title="Geospatial File Measurement API",
-    description="Upload KML or zipped Shapefiles to calculate per-feature measurements.",
+    description=(
+        "Upload KML or zipped Shapefiles, inspect map-ready geometries, and retrieve "
+        "per-feature area and length measurements. Results are stored in the configured database."
+    ),
     version="1.0.0",
-    docs_url=None,
     redoc_url=None,
-    openapi_url=None,
 )
 app.include_router(files_router)
 

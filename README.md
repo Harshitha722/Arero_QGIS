@@ -48,14 +48,14 @@ flowchart LR
 - **Application and routes:** `server/app/main.py` serves the UI and health endpoint. `server/app/routes/files.py` handles upload and retrieval requests.
 - **File processing:** `server/app/services/file_service.py` validates uploads, safely extracts Shapefile archives, and parses KML or Shapefile content. `server/app/services/measurement_service.py` transforms geometries for display and calculates measurements.
 - **Persistence:** `server/app/services/storage_service.py` writes and reads processed records. `server/app/utils/database.py` configures PyMySQL and initializes the `files` and `features` tables.
-- **Response schemas:** `server/app/schemas/file.py` defines API response models. Generated OpenAPI, Swagger UI, and ReDoc endpoints are disabled.
+- **Response schemas and API docs:** `server/app/schemas/file.py` defines API response models. FastAPI serves Swagger UI at `/docs` and the machine-readable OpenAPI schema at `/openapi.json`; ReDoc is disabled.
 
 ## Technology stack
 
 | Technology | Role |
 |---|---|
 | Python 3.10 or later | Backend language; the source uses modern union type syntax. |
-| FastAPI, Uvicorn | HTTP API, request validation, and local ASGI server. |
+| FastAPI, Uvicorn | HTTP API, request validation, Swagger UI, OpenAPI schema, and local ASGI server. |
 | Shapely | Geometry construction, transformations, validity checks, and planar area/length operations. |
 | pyproj | CRS parsing, coordinate transformations, and UTM CRS selection. |
 | pyshp | Shapefile and attribute-record reading. |
@@ -151,6 +151,8 @@ python -m uvicorn app.main:app --reload
 Open:
 
 - Web interface: <http://127.0.0.1:8000/>
+- Swagger UI: <http://127.0.0.1:8000/docs>
+- OpenAPI schema: <http://127.0.0.1:8000/openapi.json>
 
 ### Linux and macOS
 
@@ -290,16 +292,6 @@ curl http://127.0.0.1:8000/api/files/00000000-0000-4000-8000-000000000000/measur
 The measurement service transforms each feature to EPSG:4326, takes a representative point, determines its UTM zone, and chooses the northern or southern UTM EPSG code from the point's latitude. It then transforms that feature from its source CRS to the selected UTM CRS and uses Shapely's planar `.area` or `.length` operation. Coordinates are transformed with `always_xy=True` so longitude/easting is treated as the x-axis.
 
 This strategy assumes a feature is reasonably represented by one local UTM zone. The code accepts longitude from -180 degrees through 180 degrees and latitude from -80 through 84 degrees; features outside this range cannot be measured. Large, global, or cross-zone features can have distortion or an unsuitable single-zone result. The application does not currently choose equal-area projections or calculate geodesic measurements.
-
-## Design decisions and trade-offs
-
-- **FastAPI:** provides typed request handling and response validation through a small route layer.
-- **Shapely and pyproj:** separate geometry operations from CRS transformation and measurement, while allowing each feature's errors to be recorded alongside results.
-- **KML and zipped Shapefile:** cover two common exchange formats. ZIP extraction uses a temporary directory and explicit safety limits; uploads are not retained as source files.
-- **Per-feature UTM:** gives local planar meter units for common regional data and avoids applying planar measurement directly to angular longitude/latitude coordinates. It is not a universal projection strategy.
-- **Database persistence:** `files` stores upload metadata and `features` stores geometry, properties, CRS, measurements, and processing errors. Tables are initialized lazily by database operations.
-- **Synchronous processing:** parsing and measurement happen in the upload request. This keeps the implementation straightforward, but long or complex jobs occupy request processing time; there is no task queue or progress reporting.
-- **Static frontend:** avoids a separate build system, but Leaflet and map tiles depend on external services being available in the browser.
 
 ## Using the web interface
 
